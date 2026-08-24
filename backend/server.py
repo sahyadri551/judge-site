@@ -4,7 +4,11 @@ from pydantic import BaseModel, Field
 from typing import Optional
 from datetime import datetime, timezone
 import re
+import os
+from dotenv import load_dotenv
+from pymongo import MongoClient
 
+load_dotenv()
 app = FastAPI(title="NyayaAI Legal Research Assistant", version="1.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
@@ -18,12 +22,47 @@ SOURCES = [
  {"id":"case-kesavananda","title":"Kesavananda Bharati v. State of Kerala (1973)","category":"Supreme Court Judgments","act":"Landmark Judgment","section":"(1973) 4 SCC 225","summary":"Established the Basic Structure Doctrine, limiting Parliament's power to amend the Constitution.","full_text":"A 13-judge Constitution Bench held that Parliament may amend the Constitution under Article 368, but cannot alter or destroy its basic structure, including judicial review, federalism, secularism and democracy.","tags":["Basic Structure","Constitutional Law"]},
  {"id":"case-puttaswamy","title":"K.S. Puttaswamy v. Union of India (2017)","category":"Supreme Court Judgments","act":"Landmark Judgment","section":"(2017) 10 SCC 1","summary":"A unanimous nine-judge bench recognised privacy as a fundamental right under Article 21.","full_text":"Justice K.S. Puttaswamy (Retd.) v. Union of India: the right to privacy is intrinsic to life and personal liberty and forms part of the freedoms guaranteed under Part III.","tags":["Right to Privacy","Article 21"]},
 ]
+for source in SOURCES:
+    if source["category"] == "Supreme Court Judgments":
+        source["official_source"] = "Supreme Court of India — Judgments"
+        source["official_url"] = "https://main.sci.gov.in/judgments"
+    else:
+        source["official_source"] = "India Code — official legislation portal"
+        source["official_url"] = "https://www.indiacode.nic.in/"
+
+try:
+    mongo = MongoClient(os.environ["MONGO_URL"], serverSelectionTimeoutMS=1500)
+    mongo.admin.command("ping")
+    db = mongo[os.environ["DB_NAME"]]
+    history_collection = db["nyaya_research_history"]
+    saved_collection = db["nyaya_saved_briefs"]
+    PERSISTENCE_ENABLED = True
+except Exception:
+    mongo = None
+    history_collection = None
+    saved_collection = None
+    PERSISTENCE_ENABLED = False
 HISTORY = []
 
 class ResearchRequest(BaseModel):
     query: str = Field(..., min_length=3)
     statute_filter: Optional[str] = "All"
     use_hybrid_search: bool = True
+
+class SavedBriefRequest(BaseModel):
+    query: str
+    answer: str
+    confidence_score: float
+    citations: list
+    hindi_answer: Optional[str] = None
+
+def read_history():
+    if PERSISTENCE_ENABLED:
+        return list(history_collection.find({}, {"_id": 0}).sort("created_at", -1).limit(25))
+    return [h.copy() for h in HISTORY]
+
+def hindi_answer(lead, precedent):
+    return f"**कानूनी स्थिति**\nआपके प्रश्न के लिए सबसे प्रासंगिक प्रावधान {lead['act']} की {lead['section']} है। {lead['summary']}\n\n**न्यायिक संदर्भ**\nप्राप्त स्रोतों में {precedent['title']} भी शामिल है। इसका मुख्य निष्कर्ष: {precedent['summary']}\n\n**व्यावहारिक निष्कर्ष**\nइस उत्तर को प्रारंभिक शोध के रूप में उपयोग करें और आधिकारिक कानून स्रोत तथा योग्य अधिवक्ता से वर्तमान पाठ और तथ्यों की पुष्टि करें।"
 
 def rank_sources(query: str, scope: str):
     words = set(re.findall(r"[a-z0-9]+", query.lower()))
@@ -55,12 +94,26 @@ def research(req: ResearchRequest):
     citations = [{"id":s["id"],"title":s["title"],"section":s["section"],"act":s["act"],"relevance_score":round(max(.72, .96-(i*.06)),2)} for i,s in enumerate(matches)]
     lead, precedent = matches[0], matches[min(1, len(matches)-1)]
     answer = f"Based on the indexed sources, the closest legal position for your question is anchored in {lead['act']}, {lead['section']}.\n\n**Statutory position**\n{lead['summary']} [1]\n\n**Judicial context**\nThe retrieved corpus also includes {precedent['title']}. Its recorded holding is: {precedent['summary']} [2]\n\n**Practical takeaway**\nUse the cited provision as the starting point, then verify the current text, amendments, and facts with an official law report or qualified advocate before relying on this answer."
-    item = {"id":f"q-{len(HISTORY)+1}","query":req.query,"timestamp":datetime.now(timezone.utc).strftime("%d %b %Y, %H:%M"),"citations_count":len(citations),"confidence":round(91.0 + len(matches)*1.8,1)}
-    HISTORY.insert(0,item)
-    return {"answer":answer,"confidence_score":item["confidence"],"retrieval_metrics":{"faiss_vector_score":0.91,"bm25_score":12.6,"latency_ms":184,"slm_model":"Nyaya-SLM-4B · local demo"},"citations":citations,"disclaimer":"Demo grounding only — NyayaAI does not provide legal advice. Verify every provision and citation against an official source before use."}
+    item = {"id":f"q-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S%f')}","query":req.query,"timestamp":datetime.now(timezone.utc).strftime("%d %b %Y, %H:%M"),"citations_count":len(citations),"confidence":round(91.0 + len(matches)*1.8,1),"created_at":datetime.now(timezone.utc)}
+    if PERSISTENCE_ENABLED: history_collection.insert_one(item.copy())
+    else: HISTORY.insert(0, item.copy())
+    return {"answer":answer,"hindi_answer":hindi_answer(lead, precedent),"confidence_score":item["confidence"],"retrieval_metrics":{"faiss_vector_score":0.91,"bm25_score":12.6,"latency_ms":184,"slm_model":"Nyaya-SLM-4B · local demo"},"citations":citations,"disclaimer":"Demo grounding only — NyayaAI does not provide legal advice. Verify every provision and citation against an official source before use."}
 
 @app.get("/api/research/history")
-def history(): return {"queries":[h.copy() for h in HISTORY]}
+def history(): return {"queries":read_history()}
+
+@app.post("/api/research/saved")
+def save_brief(req: SavedBriefRequest):
+    brief = req.model_dump()
+    brief["id"] = f"brief-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S%f')}"
+    brief["saved_at"] = datetime.now(timezone.utc).isoformat()
+    if PERSISTENCE_ENABLED: saved_collection.insert_one(brief.copy())
+    return {k:v for k,v in brief.items() if k != "_id"}
+
+@app.get("/api/research/saved")
+def saved_briefs():
+    if PERSISTENCE_ENABLED: return {"briefs":list(saved_collection.find({}, {"_id": 0}).sort("saved_at", -1).limit(25))}
+    return {"briefs":[]}
 
 @app.get("/api/analytics")
 def analytics():

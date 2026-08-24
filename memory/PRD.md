@@ -6,7 +6,7 @@ Develop an AI-powered Legal Research Assistant for Indian law that retrieves rel
 ## Architecture decisions
 - React frontend with FastAPI backend, using `REACT_APP_BACKEND_URL` for all browser API calls.
 - Deterministic local demo engine for source-grounded synthesis; no external AI key required.
-- Seeded in-memory corpus for the MVP, with clear citations and a legal disclaimer.
+- Seeded corpus for the MVP, with clear citations and a legal disclaimer; MongoDB persists history and saved briefs when available.
 - Three app areas: Ask Nyaya, Source Library, and Corpus Health.
 
 ## User personas
@@ -26,12 +26,16 @@ Develop an AI-powered Legal Research Assistant for Indian law that retrieves rel
 - 2026-08-24: Added source library with search, category filtering, source detail modal, source copy, and query-from-source action.
 - 2026-08-24: Added corpus health dashboard with indexed corpus statistics, distribution bars, and grounding architecture explanation.
 - 2026-08-24: Fixed clipboard permission handling and stale category filter; verified desktop/mobile flows and API regressions.
+- 2026-08-24: Added curated official verification links and metadata for India Code and Supreme Court judgment portals.
+- 2026-08-24: Added server-persistent research history and saved briefs without accounts, plus a saved-brief count on the dashboard.
+- 2026-08-24: Added downloadable HTML research briefs designed for browser print-to-PDF, including citations and verification notes.
+- 2026-08-24: Added bilingual English/Hindi answer toggle with source-grounded Hindi synthesis and Hindi-friendly question input.
 
 ## Prioritized backlog
 - P0: Replace seeded corpus with an official-source ingestion pipeline and persistent index.
-- P1: Add persistent saved research history and user workspaces.
+- P1: Add authenticated team workspaces and permissions around saved briefs.
 - P1: Add document upload and quote-level source highlighting.
-- P2: Add exportable research briefs and bilingual Hindi answers.
+- P2: Add additional Indian-language answer modes and richer translation quality.
 
 ## Next tasks
 1. Connect official Gazette and Supreme Court datasets.

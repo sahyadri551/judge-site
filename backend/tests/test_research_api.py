@@ -52,3 +52,46 @@ def test_grounded_query_validation_and_scoping(api):
     assert answer.json()["citations"]
     assert all("Nagarik" in citation["act"] for citation in answer.json()["citations"])
     assert invalid.status_code == 422
+
+
+def test_query_returns_hindi_and_history_persists(api):
+    query = "TEST_hindi undertrial bail BNSS Section 479"
+    response = api.post(f"{BASE_URL}/api/research/query", json={"query": query}, timeout=15)
+    assert response.status_code == 200
+    payload = response.json()
+    assert isinstance(payload["hindi_answer"], str)
+    assert "कानूनी" in payload["hindi_answer"]
+    history = api.get(f"{BASE_URL}/api/research/history", timeout=15)
+    assert history.status_code == 200
+    assert any(item["query"] == query for item in history.json()["queries"])
+
+
+def test_saved_brief_create_and_get(api):
+    query = "TEST_saved brief Article 21"
+    response = api.post(
+        f"{BASE_URL}/api/research/saved",
+        json={
+            "query": query,
+            "answer": "TEST answer",
+            "confidence_score": 92.4,
+            "citations": [{"id": "const-art21", "title": "Article 21"}],
+            "hindi_answer": "TEST हिंदी उत्तर",
+        },
+        timeout=15,
+    )
+    assert response.status_code == 200
+    saved = response.json()
+    assert saved["query"] == query
+    assert saved["id"].startswith("brief-")
+    listing = api.get(f"{BASE_URL}/api/research/saved", timeout=15)
+    assert listing.status_code == 200
+    assert any(item["id"] == saved["id"] for item in listing.json()["briefs"])
+
+
+def test_sources_expose_curated_official_metadata(api):
+    for source_id in ("const-art21", "case-kesavananda"):
+        response = api.get(f"{BASE_URL}/api/statutes/{source_id}", timeout=15)
+        assert response.status_code == 200
+        source = response.json()
+        assert source["official_source"]
+        assert source["official_url"].startswith("https://")
