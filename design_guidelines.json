@@ -1,0 +1,40 @@
+{
+  "project_name": "NyayaAI",
+  "app_type": "hybrid_fullstack",
+  "theme": {
+    "archetype": "ORGANIC & EARTHY / SWISS LEGAL",
+    "primary_color": "#1B3B36",
+    "accent_color": "#C59B27",
+    "background_color": "#F9F8F6",
+    "card_background": "#FFFFFF",
+    "text_primary": "#1A2E2B",
+    "text_secondary": "#5C706B",
+    "border_color": "#D4DFDC"
+  },
+  "typography": {
+    "heading_font": "Playfair Display, serif",
+    "body_font": "Plus Jakarta Sans, sans-serif",
+    "mono_font": "JetBrains Mono, monospace"
+  },
+  "component_path": "/app/frontend/src/components/",
+  "instructions_to_main_agent": "Build NyayaAI Legal Research Assistant for Indian law with FastAPI backend and React frontend. Include legal Q&A workspace, hybrid retrieval engine, statutes & judgments library, research dashboard, confidence indicators, and saved queries.",
+  "image_urls": {
+    "supreme_court": {
+      "url": "https://images.unsplash.com/photo-1589829545856-d10d557cf95f?auto=format&fit=crop&q=80&w=1200",
+      "category": "hero",
+      "description": "Supreme Court of India pillars and architecture"
+    },
+    "law_library": {
+      "url": "https://images.unsplash.com/photo-1521587760476-6c12a4b040da?auto=format&fit=crop&q=80&w=1200",
+      "category": "library",
+      "description": "Law books and research library"
+    }
+  },
+  "features_implemented": [
+    "Legal Q&A with SLM simulation & citations",
+    "Hybrid FAISS + BM25 search index simulation",
+    "Statutes and Landmark Judgments Library",
+    "Research Dashboard with statistics & export",
+    "Bookmarking and saved queries"
+  ]
+}

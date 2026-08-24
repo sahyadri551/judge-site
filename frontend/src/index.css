@@ -1,0 +1,4 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+html{scroll-behavior:smooth}body{margin:0;-webkit-font-smoothing:antialiased}button,input,textarea,select{font:inherit}::selection{background:#c3952d;color:#173b35}
