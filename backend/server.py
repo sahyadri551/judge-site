@@ -5,6 +5,9 @@ from typing import Optional
 from datetime import datetime, timezone
 import re
 import os
+import asyncio
+import hashlib
+import requests
 from dotenv import load_dotenv
 from pymongo import MongoClient
 
@@ -25,10 +28,10 @@ SOURCES = [
 for source in SOURCES:
     if source["category"] == "Supreme Court Judgments":
         source["official_source"] = "Supreme Court of India — Judgments"
-        source["official_url"] = "https://main.sci.gov.in/judgments"
+        source["official_url"] = "https://www.sci.gov.in/latest-judgements/"
     else:
         source["official_source"] = "India Code — official legislation portal"
-        source["official_url"] = "https://www.indiacode.nic.in/"
+        source["official_url"] = "https://indiacode.gov.in/"
 
 try:
     mongo = MongoClient(os.environ["MONGO_URL"], serverSelectionTimeoutMS=1500)
@@ -43,6 +46,7 @@ except Exception:
     saved_collection = None
     PERSISTENCE_ENABLED = False
 HISTORY = []
+SYNC_STATE = {}
 
 class ResearchRequest(BaseModel):
     query: str = Field(..., min_length=3)
@@ -62,7 +66,39 @@ def read_history():
     return [h.copy() for h in HISTORY]
 
 def hindi_answer(lead, precedent):
-    return f"**कानूनी स्थिति**\nआपके प्रश्न के लिए सबसे प्रासंगिक प्रावधान {lead['act']} की {lead['section']} है। {lead['summary']}\n\n**न्यायिक संदर्भ**\nप्राप्त स्रोतों में {precedent['title']} भी शामिल है। इसका मुख्य निष्कर्ष: {precedent['summary']}\n\n**व्यावहारिक निष्कर्ष**\nइस उत्तर को प्रारंभिक शोध के रूप में उपयोग करें और आधिकारिक कानून स्रोत तथा योग्य अधिवक्ता से वर्तमान पाठ और तथ्यों की पुष्टि करें।"
+    return f"**मुद्दा**\nआपके प्रश्न का केंद्र {lead['act']} की {lead['section']} और उससे जुड़े न्यायिक सिद्धांत हैं।\n\n**संक्षिप्त उत्तर**\nप्रासंगिक प्रावधान यह है: {lead['summary']} [1]\n\n**कानूनी स्थिति**\n{lead['full_text']} [1]\n\n**न्यायिक संदर्भ**\n{precedent['title']} में दर्ज निष्कर्ष: {precedent['summary']} [2]\n\n**व्यावहारिक अनुप्रयोग और सावधानियाँ**\nतथ्यों, अपवादों और वर्तमान संशोधनों की जाँच करें। यह प्रारंभिक शोध है; आधिकारिक स्रोत और योग्य अधिवक्ता से पुष्टि आवश्यक है।"
+
+def check_official_source(source):
+    checked_at = datetime.now(timezone.utc).isoformat()
+    try:
+        response = requests.get(source["official_url"], timeout=8, allow_redirects=True, headers={"User-Agent":"NyayaAI-source-monitor/1.0"})
+        body_hash = hashlib.sha256(response.content).hexdigest()
+        previous = SYNC_STATE.get(source["id"], {})
+        record = {"source_id":source["id"],"official_url":source["official_url"],"final_url":response.url,"checked_at":checked_at,"http_status":response.status_code,"content_fingerprint":body_hash,"last_modified":response.headers.get("last-modified"),"etag":response.headers.get("etag"),"changed_since_last_check":bool(previous and previous.get("content_fingerprint") != body_hash),"review_status":"Review required" if previous and previous.get("content_fingerprint") != body_hash else "Checked — no review flag"}
+    except Exception as exc:
+        record = {"source_id":source["id"],"official_url":source["official_url"],"checked_at":checked_at,"http_status":None,"content_fingerprint":None,"last_modified":None,"etag":None,"changed_since_last_check":False,"review_status":"Check failed — verify URL manually","error":str(exc)}
+    SYNC_STATE[source["id"]] = record
+    if PERSISTENCE_ENABLED: db["nyaya_source_sync"].replace_one({"source_id":source["id"]}, record, upsert=True)
+    return record
+
+def source_with_sync(source):
+    result = source.copy()
+    record = SYNC_STATE.get(source["id"])
+    if PERSISTENCE_ENABLED: record = db["nyaya_source_sync"].find_one({"source_id":source["id"]}, {"_id":0}) or record
+    result["sync"] = record or {"review_status":"Not checked yet","changed_since_last_check":False}
+    return result
+
+async def scheduled_refresh():
+    while True:
+        await asyncio.to_thread(refresh_all_sources)
+        await asyncio.sleep(86400)
+
+def refresh_all_sources():
+    return [check_official_source(source) for source in SOURCES]
+
+@app.on_event("startup")
+async def start_source_monitor():
+    asyncio.create_task(scheduled_refresh())
 
 def rank_sources(query: str, scope: str):
     words = set(re.findall(r"[a-z0-9]+", query.lower()))
@@ -86,14 +122,14 @@ def statutes(category: Optional[str] = None, search: Optional[str] = None):
 def statute_detail(source_id: str):
     source = next((s for s in SOURCES if s["id"] == source_id), None)
     if not source: raise HTTPException(404, "Source not found")
-    return source.copy()
+    return source_with_sync(source)
 
 @app.post("/api/research/query")
 def research(req: ResearchRequest):
     matches = rank_sources(req.query, req.statute_filter)
     citations = [{"id":s["id"],"title":s["title"],"section":s["section"],"act":s["act"],"relevance_score":round(max(.72, .96-(i*.06)),2)} for i,s in enumerate(matches)]
     lead, precedent = matches[0], matches[min(1, len(matches)-1)]
-    answer = f"Based on the indexed sources, the closest legal position for your question is anchored in {lead['act']}, {lead['section']}.\n\n**Statutory position**\n{lead['summary']} [1]\n\n**Judicial context**\nThe retrieved corpus also includes {precedent['title']}. Its recorded holding is: {precedent['summary']} [2]\n\n**Practical takeaway**\nUse the cited provision as the starting point, then verify the current text, amendments, and facts with an official law report or qualified advocate before relying on this answer."
+    answer = f"**Issue**\nYour question turns on {lead['act']} — {lead['section']} and the related precedent in the retrieved corpus.\n\n**Short answer**\nThe closest statutory anchor says: {lead['summary']} [1]\n\n**Statutory position**\n{lead['full_text']} [1]\n\n**Precedent**\nThe retrieved corpus also includes {precedent['title']}. Its recorded holding is: {precedent['summary']} [2]\n\n**Application to your question**\nStart with the cited provision, map each factual element to its text, and check whether any exception, procedural threshold, or later amendment changes the result. This answer is a research direction rather than a conclusion on a specific case.\n\n**Counterpoints and limits**\nThe result may change with different facts, jurisdiction, procedural posture, later decisions, or amendments not yet reviewed. Do not treat a high retrieval score as proof that the provision applies.\n\n**Verification steps**\nOpen each official source below, confirm the current version and commencement date, read the full judgment or provision, and obtain qualified legal advice before relying on it."
     item = {"id":f"q-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S%f')}","query":req.query,"timestamp":datetime.now(timezone.utc).strftime("%d %b %Y, %H:%M"),"citations_count":len(citations),"confidence":round(91.0 + len(matches)*1.8,1),"created_at":datetime.now(timezone.utc)}
     if PERSISTENCE_ENABLED: history_collection.insert_one(item.copy())
     else: HISTORY.insert(0, item.copy())
@@ -114,6 +150,18 @@ def save_brief(req: SavedBriefRequest):
 def saved_briefs():
     if PERSISTENCE_ENABLED: return {"briefs":list(saved_collection.find({}, {"_id": 0}).sort("saved_at", -1).limit(25))}
     return {"briefs":[]}
+
+@app.get("/api/sources/sync")
+def source_sync():
+    records = []
+    for source in SOURCES:
+        records.append(source_with_sync(source)["sync"] | {"title":source["title"],"official_source":source["official_source"]})
+    return {"sources":records,"monitor_policy":"Safe check only — legal text is never replaced automatically.","last_refresh":max((r.get("checked_at","") for r in records), default=None)}
+
+@app.post("/api/sources/sync")
+def run_source_sync():
+    records = refresh_all_sources()
+    return {"sources":records,"message":"Official pages checked. Any fingerprint change is flagged for manual review; stored legal text was not replaced."}
 
 @app.get("/api/analytics")
 def analytics():
